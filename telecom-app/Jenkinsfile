@@ -22,8 +22,8 @@ pipeline {
             steps {
                 echo 'Running tests okay!'
                 sh '''
-                    pip3 install -r requirements.txt
-                    pytest test_app.py -v
+                    pip3 install -r requirements.txt --break-system-packages
+                    cd telecom-app && pytest test_app.py -v
                 '''
             }
         }
