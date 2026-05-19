@@ -1,0 +1,86 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION   = 'us-east-1'
+        ECR_REGISTRY = '550651695287.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPO     = 'telecom-ap'
+        ECR_REPO     = 'telecom-app'
+        IMAGE_TAG    = "v1.0.${BUILD_NUMBER}"
+        NAMESPACE    = 'dev'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo 'Cloning repository okay!'
+                checkout scm
+            }
+        }
+
+        stage('Test') {
+            steps {
+                echo 'Running tests okay!'
+                sh '''
+                    pip install -r requirements.txt
+                    pytest test_app.py -v
+                '''
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                echo "Building Docker image: ${IMAGE_TAG} okay!"
+                sh '''
+                    docker build -t ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG} .
+                '''
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                echo 'Pushing image to ECR okay!'
+                withCredentials([aws(credentialsId: 'aws-credentials',
+                                     region: 'us-east-1')]) {
+                    sh '''
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                        docker login --username AWS \
+                        --password-stdin ${ECR_REGISTRY}
+
+                        docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                echo "Deploying to ${NAMESPACE} namespace okay!"
+                sh '''
+                    kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+
+                    sed "s|IMAGE_PLACEHOLDER|${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}|g" k8s/deployment.yaml | kubectl apply -f - -n ${NAMESPACE}
+
+                    kubectl apply -f k8s/service.yaml -n ${NAMESPACE}
+
+                    kubectl rollout status deployment/telecom-app -n ${NAMESPACE}
+                '''
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "Pipeline SUCCESS okay!"
+            echo "Deployed ${IMAGE_TAG} to ${NAMESPACE}"
+        }
+        failure {
+            echo "Pipeline FAILED okay!"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

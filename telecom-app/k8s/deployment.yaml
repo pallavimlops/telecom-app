@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telecom-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: telecom-app
+  template:
+    metadata:
+      labels:
+        app: telecom-app
+    spec:
+      containers:
+      - name: telecom-app
+        image: IMAGE_PLACEHOLDER
+        ports:
+        - containerPort: 5000
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
