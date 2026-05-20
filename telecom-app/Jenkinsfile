@@ -61,9 +61,10 @@ pipeline {
                 sh '''
                     kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-                    sed "s|IMAGE_PLACEHOLDER|${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}|g" k8s/deployment.yaml | kubectl apply -f - -n ${NAMESPACE}
+                    sed "s|IMAGE_PLACEHOLDER|${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}|g" telecom-app/k8s/deployment.yaml | kubectl apply -f - -n ${NAMESPACE}
+                    
 
-                    kubectl apply -f k8s/service.yaml -n ${NAMESPACE}
+                    kubectl apply -f telecom-app/k8s/service.yaml -n ${NAMESPACE}
 
                     kubectl rollout status deployment/telecom-app -n ${NAMESPACE}
                 '''
