@@ -75,7 +75,7 @@ pipeline {
 
     post {
         success {
-            echo "Pipeline SUCCESS okay!"
+            echo "Pipeline SUCCESS!"
             echo "Deployed ${IMAGE_TAG} to ${NAMESPACE}"
         }
         failure {
