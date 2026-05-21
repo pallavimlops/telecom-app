@@ -1,0 +1,117 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: "v1.0.${BUILD_NUMBER}",
+            description: 'Docker image tag to deploy'
+        )
+    }
+
+    environment {
+        AWS_REGION   = 'us-east-1'
+        ECR_REGISTRY = '550651695287.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPO     = 'telecom-ap'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo 'Cloning code okay!'
+                checkout scm
+            }
+        }
+
+        stage('Test') {
+            steps {
+                echo 'Running tests okay!'
+                sh '''
+                    cd telecom-app
+                    pip3 install -r requirements.txt --break-system-packages
+                    python3 -m pytest test_app.py -v
+                '''
+            }
+        }
+
+        stage('Docker Build and Push') {
+            steps {
+                echo "Building and pushing: ${params.IMAGE_TAG} okay!"
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-credentials',
+                                  accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                                  secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+                    sh '''
+                        cd telecom-app
+                        docker build -t ${ECR_REGISTRY}/${ECR_REPO}:${params.IMAGE_TAG} .
+
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                        docker login --username AWS --password-stdin ${ECR_REGISTRY}
+
+                        docker push ${ECR_REGISTRY}/${ECR_REPO}:${params.IMAGE_TAG}
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to DEV') {
+            steps {
+                echo 'Deploying to DEV okay!'
+                sh '''
+                    kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f -
+                    sed "s|IMAGE_PLACEHOLDER|${ECR_REGISTRY}/${ECR_REPO}:${params.IMAGE_TAG}|g" telecom-app/k8s/deployment.yaml | kubectl apply -f - -n dev
+                    kubectl apply -f telecom-app/k8s/service.yaml -n dev
+                    kubectl rollout status deployment/telecom-app -n dev
+                '''
+            }
+        }
+
+        stage('Deploy to STAGING') {
+            steps {
+                echo 'Deploying to STAGING okay!'
+                sh '''
+                    kubectl create namespace staging --dry-run=client -o yaml | kubectl apply -f -
+                    sed "s|IMAGE_PLACEHOLDER|${ECR_REGISTRY}/${ECR_REPO}:${params.IMAGE_TAG}|g" telecom-app/k8s/deployment.yaml | kubectl apply -f - -n staging
+                    kubectl apply -f telecom-app/k8s/service.yaml -n staging
+                    kubectl rollout status deployment/telecom-app -n staging
+                '''
+            }
+        }
+
+        stage('Approval for PROD') {
+            steps {
+                echo 'Waiting for approval okay!'
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: "Deploy ${params.IMAGE_TAG} to PRODUCTION?",
+                          ok: 'Yes, Deploy to PROD!'
+                }
+            }
+        }
+
+        stage('Deploy to PROD') {
+            steps {
+                echo 'Deploying to PRODUCTION okay!'
+                sh '''
+                    kubectl create namespace prod --dry-run=client -o yaml | kubectl apply -f -
+                    sed "s|IMAGE_PLACEHOLDER|${ECR_REGISTRY}/${ECR_REPO}:${params.IMAGE_TAG}|g" telecom-app/k8s/deployment.yaml | kubectl apply -f - -n prod
+                    kubectl apply -f telecom-app/k8s/service.yaml -n prod
+                    kubectl rollout status deployment/telecom-app -n prod
+                '''
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "SUCCESS: ${params.IMAGE_TAG} deployed to all environments okay!"
+        }
+        failure {
+            echo "FAILED: Pipeline failed okay!"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

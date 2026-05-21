@@ -1,0 +1,406 @@
+# SonarQube — Complete Execution Steps okay!
+
+---
+
+# PHASE 1 — SonarQube Server Setup
+
+## STEP 1 — Launch SonarQube EC2
+
+```
+AWS Console → EC2 → Launch Instance
+
+Name          = sonarqube-server
+AMI           = Ubuntu 22.04 LTS
+Instance type = m7i-flex.large
+Storage       = 20 GB
+
+Security Group:
+→ HTTP port 9000 → Anywhere okay!
+```
+
+---
+
+## STEP 2 — SSH into SonarQube EC2
+
+```bash
+ssh -i your-key.pem ubuntu@<SONARQUBE-EC2-IP>
+```
+
+---
+
+## STEP 3 — Install Java
+
+```bash
+sudo apt update -y
+sudo apt install openjdk-17-jdk -y
+
+# Verify
+java -version
+```
+
+---
+
+## STEP 4 — Download and Install SonarQube
+
+```bash
+wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-10.3.0.82913.zip
+sudo apt install unzip -y
+unzip sonarqube-10.3.0.82913.zip
+sudo mv sonarqube-10.3.0.82913 /opt/sonarqube
+```
+
+---
+
+## STEP 5 — Create SonarQube User
+
+```bash
+# NOTE: SonarQube cannot run as root
+# Must create separate user okay!
+sudo adduser --system --no-create-home --group --disabled-login sonarqube
+sudo chown -R sonarqube:sonarqube /opt/sonarqube
+```
+
+---
+
+## STEP 6 — Start SonarQube
+
+```bash
+# Start as sonarqube user (NOT root)
+sudo -u sonarqube /opt/sonarqube/bin/linux-x86-64/sonar.sh start
+
+# Wait 2 minutes then check status
+sudo -u sonarqube /opt/sonarqube/bin/linux-x86-64/sonar.sh status
+# Should show: SonarQube is running okay!
+```
+
+---
+
+## STEP 7 — Open SonarQube UI
+
+```
+Browser → http://<SONARQUBE-EC2-IP>:9000
+
+Login:
+Username = admin
+Password = admin
+
+First login → it will ask to change password
+Set new password okay!
+```
+
+---
+
+## STEP 8 — Generate SonarQube Token
+
+```
+SonarQube UI → Top right → Admin → My Account
+→ Security tab
+→ Generate Tokens
+
+Name    = jenkins-token
+Type    = User Token
+Expires = No expiration
+→ Click Generate
+→ Copy token immediately
+  (Cannot see it again!) okay!
+```
+
+---
+
+# PHASE 2 — Jenkins Server Setup
+
+## STEP 9 — Install SonarQube Scanner on Jenkins Server
+
+```bash
+# SSH into Jenkins server
+ssh -i your-key.pem ubuntu@<JENKINS-EC2-IP>
+
+# Download SonarQube Scanner
+# NOTE: Use Maven Central mirror
+# binaries.sonarsource.com gives 403 error okay!
+curl -L -o sonar-scanner.zip \
+  "https://search.maven.org/remotecontent?filepath=org/sonarsource/scanner/cli/sonar-scanner-cli/5.0.1.3006/sonar-scanner-cli-5.0.1.3006.zip"
+
+unzip sonar-scanner.zip
+sudo mv sonar-scanner-5.0.1.3006 /opt/sonar-scanner
+sudo ln -s /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
+
+# Verify
+sonar-scanner --version
+```
+
+---
+
+## STEP 10 — Configure sonar-scanner.properties
+
+```bash
+sudo vi /opt/sonar-scanner/conf/sonar-scanner.properties
+```
+
+Add at the bottom:
+```
+sonar.host.url=http://<SONARQUBE-EC2-IP>:9000
+sonar.sourceEncoding=UTF-8
+```
+
+Save: press Esc → type :wq → Enter okay!
+
+---
+
+# PHASE 3 — Jenkins UI Configuration
+
+## STEP 11 — Install SonarQube Scanner Plugin
+
+```
+Jenkins → Manage Jenkins → Plugins → Available plugins
+
+Search = sonar
+→ Select "SonarQube Scanner"
+→ Click Install
+→ Restart Jenkins okay!
+```
+
+---
+
+## STEP 12 — Add SonarQube Token in Jenkins Credentials
+
+```
+Jenkins → Manage Jenkins → Credentials
+→ System → Global credentials → Add Credentials
+
+Kind        = Secret text
+Scope       = Global
+Secret      = <paste sonarqube token here>
+ID          = sonarqube-token
+Description = SonarQube Token
+→ Create okay!
+```
+
+---
+
+## STEP 13 — Configure SonarQube Server in Jenkins
+
+```
+Jenkins → Manage Jenkins → System
+
+Scroll to "SonarQube servers" section:
+→ Check "Environment variables"
+→ Click "Add SonarQube"
+
+Name                        = sonarqube-server
+Server URL                  = http://<SONARQUBE-EC2-IP>:9000
+Server authentication token = sonarqube-token
+
+→ Click Save okay!
+```
+
+---
+
+## STEP 14 — Configure SonarQube Scanner Tool
+
+```
+Jenkins → Manage Jenkins → Tools
+
+Scroll to "SonarQube Scanner installations":
+→ Click "Add SonarQube Scanner"
+
+Name             = sonar-scanner
+SONAR_RUNNER_HOME = /opt/sonar-scanner
+
+→ Click Save okay!
+```
+
+---
+
+# PHASE 4 — Pipeline Integration
+
+## STEP 15 — Add SonarQube Stage in Jenkinsfile
+
+```groovy
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION   = 'us-east-1'
+        ECR_REGISTRY = '550651695287.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPO     = 'telecom-ap'
+        IMAGE_TAG    = "v1.0.${BUILD_NUMBER}"
+        NAMESPACE    = 'dev'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh '''
+                    cd telecom-app
+                    pip3 install -r requirements.txt --break-system-packages
+                    python3 -m pytest test_app.py -v
+                '''
+            }
+        }
+
+        stage('SonarQube Scan') {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    sh '''
+                        sonar-scanner \
+                          -Dsonar.projectKey=telecom-app \
+                          -Dsonar.sources=telecom-app \
+                          -Dsonar.python.version=3
+                    '''
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    cd telecom-app
+                    docker build -t ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG} .
+                '''
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-credentials',
+                                  accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                                  secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+                    sh '''
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                        docker login --username AWS \
+                        --password-stdin ${ECR_REGISTRY}
+                        docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                sh '''
+                    kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                    sed "s|IMAGE_PLACEHOLDER|${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}|g" telecom-app/k8s/deployment.yaml | kubectl apply -f - -n ${NAMESPACE}
+                    kubectl apply -f telecom-app/k8s/service.yaml -n ${NAMESPACE}
+                    kubectl rollout status deployment/telecom-app -n ${NAMESPACE}
+                '''
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "Pipeline SUCCESS okay!"
+        }
+        failure {
+            echo "Pipeline FAILED okay!"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
+```
+
+---
+
+## STEP 16 — Push Jenkinsfile to GitHub
+
+```bash
+git add telecom-app/Jenkinsfile-sonarqube
+git commit -m "Added SonarQube stage okay!"
+git push origin main
+```
+
+---
+
+## STEP 17 — Create Jenkins Job
+
+```
+Jenkins → New Item
+
+Name = telecom-app-sonarqube
+Type = Pipeline
+→ OK
+
+Pipeline section:
+Script Path = telecom-app/Jenkinsfile-sonarqube
+→ Save okay!
+```
+
+---
+
+## STEP 18 — Run Pipeline
+
+```
+Jenkins → telecom-app-sonarqube
+→ Click Build Now
+→ Watch stages run
+
+Expected:
+✓ Checkout
+✓ Test
+✓ SonarQube Scan
+✓ Quality Gate
+✓ Docker Build
+✓ Push to ECR
+✓ Deploy to EKS okay!
+```
+
+---
+
+## STEP 19 — View Results in SonarQube UI
+
+```
+Browser → http://<SONARQUBE-EC2-IP>:9000
+
+→ Click on telecom-app project
+→ See scan results:
+   → Bugs count
+   → Vulnerabilities count
+   → Code smells count
+   → Quality Gate status okay!
+```
+
+---
+
+## Common Errors and Fixes
+
+```
+
+ERROR 1: Quality Gate timeout
+Fix: Increase timeout in pipeline
+timeout(time: 10, unit: 'MINUTES') okay!
+
+ERROR 2: SonarQube server not found
+Fix: Check sonarqube-server name matches
+Jenkins → Manage Jenkins → System → SonarQube servers okay!
+```
+
+---
+
+## Summary
+
+```
+PHASE 1 → SonarQube server setup (Steps 1-8)
+PHASE 2 → Jenkins server setup (Steps 9-10)
+PHASE 3 → Jenkins UI configuration (Steps 11-14)
+PHASE 4 → Pipeline integration (Steps 15-19) okay!
+```
