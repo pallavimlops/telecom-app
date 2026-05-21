@@ -1,6 +1,6 @@
 # telecom-app
 
-Simple Python Flask application for Jenkins CI/CD demo okay!
+Simple Python Flask application for Jenkins CI/CD demo !!
 
 ## Endpoints
 
