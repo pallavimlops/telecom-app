@@ -1,0 +1,108 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Select deployment environment okay!'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: "v1.0.${BUILD_NUMBER}",
+            description: 'Docker image tag to deploy (e.g. v1.0.1, v2.0.0)'
+        )
+        booleanParam(
+            name: 'RUN_TESTS',
+            defaultValue: true,
+            description: 'Run tests before deploying?'
+        )
+    }
+
+    environment {
+        AWS_REGION   = 'us-east-1'
+        ECR_REGISTRY = '550651695287.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPO     = 'telecom-ap'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo 'Cloning repository okay!'
+                checkout scm
+            }
+        }
+
+        stage('Test') {
+            when {
+                expression { params.RUN_TESTS == true }
+            }
+            steps {
+                echo 'Running tests okay!'
+                sh '''
+                    cd telecom-app
+                    pip3 install -r requirements.txt --break-system-packages
+                    python3 -m pytest test_app.py -v
+                '''
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                echo "Building Docker image: ${params.IMAGE_TAG} okay!"
+                sh '''
+                    cd telecom-app
+                    docker build -t ${ECR_REGISTRY}/${ECR_REPO}:${params.IMAGE_TAG} .
+                '''
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                echo 'Pushing image to ECR okay!'
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-credentials',
+                                  accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                                  secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+                    sh '''
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                        docker login --username AWS \
+                        --password-stdin ${ECR_REGISTRY}
+
+                        docker push ${ECR_REGISTRY}/${ECR_REPO}:${params.IMAGE_TAG}
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                echo "Deploying to ${params.ENVIRONMENT} namespace okay!"
+                sh '''
+                    kubectl create namespace ${params.ENVIRONMENT} --dry-run=client -o yaml | kubectl apply -f -
+
+                    sed "s|IMAGE_PLACEHOLDER|${ECR_REGISTRY}/${ECR_REPO}:${params.IMAGE_TAG}|g" telecom-app/k8s/deployment.yaml | kubectl apply -f - -n ${params.ENVIRONMENT}
+
+                    kubectl apply -f telecom-app/k8s/service.yaml -n ${params.ENVIRONMENT}
+
+                    kubectl rollout status deployment/telecom-app -n ${params.ENVIRONMENT}
+                '''
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "Pipeline SUCCESS okay!"
+            echo "Deployed ${params.IMAGE_TAG} to ${params.ENVIRONMENT}"
+        }
+        failure {
+            echo "Pipeline FAILED okay!"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
